@@ -1,7 +1,7 @@
 import os
 import re
 from pathlib import Path
-from vcxproj2cmake_v3 import convert_vcxproj
+from vcxproj2cmake import convert_vcxproj
 
 def convert_solution(sln_path):
     sln_path = Path(sln_path)
