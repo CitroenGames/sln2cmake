@@ -35,7 +35,7 @@ The script will create a CMakeLists.txt file in the same directory as your .sln 
 
 ```bash
 # Convert the example project
-python sln2cmake.py examples/TestProject/TestProject.sln
+python sln2cmake.py TestProject/TestProject.sln
 ```
 
 ## Features in Detail
