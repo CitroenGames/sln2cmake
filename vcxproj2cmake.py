@@ -2,6 +2,47 @@ import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+def _get_configuration_settings(compile_settings, settings, ns):
+    """Extract configuration-specific settings from compile settings"""
+    # Get include directories
+    inc_dirs = compile_settings.find('ns:AdditionalIncludeDirectories', ns)
+    if inc_dirs is not None and inc_dirs.text:
+        dirs = [d.strip() for d in inc_dirs.text.split(';') if d.strip() and d != '%(AdditionalIncludeDirectories)']
+        if dirs:
+            dirs = [d.replace('$(SolutionDir)', '../').replace('\\', '/') for d in dirs]
+            settings['include_dirs'] = dirs
+    
+    # Get preprocessor definitions
+    defines = compile_settings.find('ns:PreprocessorDefinitions', ns)
+    if defines is not None and defines.text:
+        defs = [d.strip() for d in defines.text.split(';') if d.strip() and d != '%(PreprocessorDefinitions)']
+        if defs:
+            settings['defines'] = defs
+            
+    # Get configuration-specific preprocessor definitions
+    config_defines = {
+        'Debug': 'DebugPreprocessorDefinitions',
+        'Release': 'ReleasePreprocessorDefinitions',
+        'Profile': 'ProfilePreprocessorDefinitions'
+    }
+    
+    for config_type, define_tag in config_defines.items():
+        config_defs = compile_settings.find(f'ns:{define_tag}', ns)
+        if config_defs is not None and config_defs.text:
+            defs = [d.strip() for d in config_defs.text.split(';') if d.strip() and d != f'%({define_tag})']
+            if defs:
+                if 'config_defines' not in settings:
+                    settings['config_defines'] = {}
+                settings['config_defines'][config_type] = defs
+    
+    # Get force includes
+    force_inc = compile_settings.find('ns:ForcedIncludeFiles', ns)
+    if force_inc is not None and force_inc.text:
+        includes = [i.strip() for i in force_inc.text.split(';') if i.strip() and i != '%(ForcedIncludeFiles)']
+        if includes:
+            includes = [os.path.relpath(i, '.').replace('\\', '/') for i in includes]
+            settings['force_includes'] = includes
+
 def convert_vcxproj(vcxproj_path):
     tree = ET.parse(vcxproj_path)
     root = tree.getroot()
@@ -49,73 +90,59 @@ def convert_vcxproj(vcxproj_path):
         cmake_content.append(f'    ${{{f"HEADER_FILES_{project_name}"}}}')
     cmake_content.append(')')
     
-    # Process Debug configuration
+    # Process configurations
     debug_settings = {}
     release_settings = {}
+    profile_settings = {}
     
     for item_def in root.findall('.//ns:ItemDefinitionGroup', ns):
         condition = item_def.get('Condition', '')
         compile_settings = item_def.find('.//ns:ClCompile', ns)
         
         if compile_settings is not None:
-            settings = debug_settings if 'Debug|' in condition else release_settings
-            
-            # Get include directories
-            inc_dirs = compile_settings.find('ns:AdditionalIncludeDirectories', ns)
-            if inc_dirs is not None and inc_dirs.text:
-                dirs = [d.strip() for d in inc_dirs.text.split(';') if d.strip() and d != '%(AdditionalIncludeDirectories)']
-                if dirs:
-                    # Replace solution dir macro
-                    dirs = [d.replace('$(SolutionDir)', '../') for d in dirs]
-                    dirs = [d.replace('\\', '/') for d in dirs]
-                    settings['include_dirs'] = dirs
-            
-            # Get preprocessor definitions
-            defines = compile_settings.find('ns:PreprocessorDefinitions', ns)
-            if defines is not None and defines.text:
-                defs = [d.strip() for d in defines.text.split(';') if d.strip() and d != '%(PreprocessorDefinitions)']
-                if defs:
-                    settings['defines'] = defs
-            
-            # Get force includes
-            force_inc = compile_settings.find('ns:ForcedIncludeFiles', ns)
-            if force_inc is not None and force_inc.text:
-                includes = [i.strip() for i in force_inc.text.split(';') if i.strip() and i != '%(ForcedIncludeFiles)']
-                if includes:
-                    # Make paths relative to project directory
-                    includes = [os.path.relpath(i, '.') for i in includes]
-                    includes = [i.replace('\\', '/') for i in includes]
-                    settings['force_includes'] = includes
+            if 'Debug|' in condition:
+                _get_configuration_settings(compile_settings, debug_settings, ns)
+            elif 'Release|' in condition:
+                _get_configuration_settings(compile_settings, release_settings, ns)
+            elif 'Profile|' in condition:
+                _get_configuration_settings(compile_settings, profile_settings, ns)
     
-    # Write configuration-specific settings using generator expressions
+    # Write configuration-specific settings
     all_include_dirs = set()
     all_defines = set()
+    config_specific_defines = []
     
     # Collect all unique settings
-    if debug_settings.get('include_dirs'):
-        all_include_dirs.update(debug_settings['include_dirs'])
-    if release_settings.get('include_dirs'):
-        all_include_dirs.update(release_settings['include_dirs'])
-    
-    if debug_settings.get('defines'):
-        all_defines.update(debug_settings['defines'])
-    if release_settings.get('defines'):
-        all_defines.update(release_settings['defines'])
+    for settings in [debug_settings, release_settings, profile_settings]:
+        if settings.get('include_dirs'):
+            all_include_dirs.update(settings['include_dirs'])
+        if settings.get('defines'):
+            all_defines.update(settings['defines'])
     
     # Write include directories
     if all_include_dirs:
         cmake_content.append(f'target_include_directories({project_name} PRIVATE {" ".join(all_include_dirs)})')
     
-    # Write defines
+    # Write common defines
     if all_defines:
         cmake_content.append(f'target_compile_definitions({project_name} PRIVATE {" ".join([f"-D{d}" for d in all_defines])})')
     
+    # Handle configuration-specific defines
+    for settings, config in [(debug_settings, 'Debug'), (release_settings, 'Release'), (profile_settings, 'Profile')]:
+        if settings.get('config_defines', {}).get(config):
+            config_defines = settings['config_defines'][config]
+            config_specific_defines.append(f'$<$<CONFIG:{config}>:{" ".join([f"-D{d}" for d in config_defines])}>')
+    
+    # Write configuration-specific defines
+    if config_specific_defines:
+        cmake_content.append(f'target_compile_definitions({project_name} PRIVATE {" ".join(config_specific_defines)})')
+    
     # Write force includes using generator expressions
     force_includes = []
-    if debug_settings.get('force_includes'):
-        force_includes.extend([f'$<$<CONFIG:Debug>:/FI{i}>' for i in debug_settings['force_includes']])
-    if release_settings.get('force_includes'):
-        force_includes.extend([f'$<$<CONFIG:Release>:/FI{i}>' for i in release_settings['force_includes']])
+    for settings, config in [(debug_settings, 'Debug'), (release_settings, 'Release'), (profile_settings, 'Profile')]:
+        if settings.get('force_includes'):
+            force_includes.extend([f'$<$<CONFIG:{config}>:/FI{i}>' for i in settings['force_includes']])
+    
     if force_includes:
         cmake_content.append(f'target_compile_options({project_name} PRIVATE {" ".join(force_includes)})')
     
