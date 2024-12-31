@@ -157,10 +157,10 @@ def convert_vcxproj(vcxproj_path):
     # Handle configuration-specific defines
     for settings in [debug_settings, release_settings, profile_settings]:
         for config in settings.get('config_defines', {}):
-        if settings.get('config_defines', {}).get(config):
-            config_defines = settings['config_defines'][config]
-            config_specific_defines.append(f'$<$<CONFIG:{config}>:{" ".join([f"-D{d}" for d in config_defines])}>')
-    
+            if settings.get('config_defines', {}).get(config):
+                config_defines = settings['config_defines'][config]
+                config_specific_defines.append(f'$<$<CONFIG:{config}>:{" ".join([f"-D{d}" for d in config_defines])}>')
+        
     # Write configuration-specific defines
     if config_specific_defines:
         cmake_content.append(f'target_compile_definitions({project_name} PRIVATE {" ".join(config_specific_defines)})')
