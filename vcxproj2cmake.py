@@ -77,7 +77,9 @@ def convert_vcxproj(vcxproj_path):
         cmake_content.append('set(CMAKE_CONFIGURATION_TYPES')
         for config in configurations:
             cmake_content.append(f'    "{config}"')
-        cmake_content.append('    CACHE STRING "" FORCE)\n')
+        cmake_content.append('    CACHE STRING "" FORCE)')
+        
+        cmake_content.append('')
     
     # Get project name
     project_name = Path(vcxproj_path).stem
@@ -118,56 +120,53 @@ def convert_vcxproj(vcxproj_path):
     cmake_content.append(')')
     
     # Process configurations
-    debug_settings = {}
-    release_settings = {}
-    profile_settings = {}
+    config_settings = {}
     
     for item_def in root.findall('.//ns:ItemDefinitionGroup', ns):
         condition = item_def.get('Condition', '')
         compile_settings = item_def.find('.//ns:ClCompile', ns)
         
-        if compile_settings is not None:
-            if 'Debug|' in condition:
-                _get_configuration_settings(compile_settings, debug_settings, ns)
-            elif 'Release|' in condition:
-                _get_configuration_settings(compile_settings, release_settings, ns)
-            elif 'Profile|' in condition:
-                _get_configuration_settings(compile_settings, profile_settings, ns)
+        if compile_settings is not None and "'$(Configuration)|$(Platform)'=='" in condition:
+            config = condition.split("'")[3].split('|')[0]
+            if config not in config_settings:
+                config_settings[config] = {}
+            _get_configuration_settings(compile_settings, config_settings[config], ns)
     
     # Write configuration-specific settings
     all_include_dirs = set()
-    all_defines = set()
-    config_specific_defines = []
+    config_defines = {}
     
-    # Collect all unique settings
-    for settings in [debug_settings, release_settings, profile_settings]:
+    # Collect all unique settings and organize defines by configuration
+    for config, settings in config_settings.items():
         if settings.get('include_dirs'):
             all_include_dirs.update(settings['include_dirs'])
-        if settings.get('defines'):
-            all_defines.update(settings['defines'])
+        
+        # Collect defines for this configuration
+        if settings:
+            defines = set()
+            if settings.get('defines'):
+                defines.update(settings['defines'])
+            if settings.get('config_defines', {}).get(config):
+                defines.update(settings['config_defines'][config])
+            if defines:
+                config_defines[config] = defines
     
     # Write include directories
     if all_include_dirs:
         cmake_content.append(f'target_include_directories({project_name} PRIVATE {" ".join(all_include_dirs)})')
     
-    # Write common defines
-    if all_defines:
-        cmake_content.append(f'target_compile_definitions({project_name} PRIVATE {" ".join([f"-D{d}" for d in all_defines])})')
-    
-    # Handle configuration-specific defines
-    for settings in [debug_settings, release_settings, profile_settings]:
-        for config in settings.get('config_defines', {}):
-            if settings.get('config_defines', {}).get(config):
-                config_defines = settings['config_defines'][config]
-                config_specific_defines.append(f'$<$<CONFIG:{config}>:{" ".join([f"-D{d}" for d in config_defines])}>')
-        
-    # Write configuration-specific defines
-    if config_specific_defines:
-        cmake_content.append(f'target_compile_definitions({project_name} PRIVATE {" ".join(config_specific_defines)})')
+    # Write configuration-specific defines using generator expressions
+    if config_defines:
+        defines_expr = []
+        for config, defines in config_defines.items():
+            if defines:
+                defines_expr.append(f'$<$<CONFIG:{config}>:{" ".join([f"-D{d}" for d in defines])}>')
+        if defines_expr:
+            cmake_content.append(f'target_compile_definitions({project_name} PRIVATE {" ".join(defines_expr)})')
     
     # Write force includes using generator expressions
     force_includes = []
-    for settings, config in [(debug_settings, 'Debug'), (release_settings, 'Release'), (profile_settings, 'Profile')]:
+    for config, settings in config_settings.items():
         if settings.get('force_includes'):
             force_includes.extend([f'$<$<CONFIG:{config}>:/FI{i}>' for i in settings['force_includes']])
     
@@ -177,7 +176,8 @@ def convert_vcxproj(vcxproj_path):
     # Get project references
     for ref in root.findall('.//ns:ProjectReference', ns):
         if 'Include' in ref.attrib:
-            dep_name = Path(ref.attrib['Include']).stem
+            dep_path = Path(ref.attrib['Include'])
+            dep_name = dep_path.stem
             cmake_content.append(f'target_link_libraries({project_name} PRIVATE {dep_name})')
     
     # Write CMakeLists.txt

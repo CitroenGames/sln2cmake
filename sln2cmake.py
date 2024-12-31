@@ -1,5 +1,6 @@
 import os
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from vcxproj2cmake import convert_vcxproj
 
@@ -30,6 +31,34 @@ def convert_solution(sln_path):
         f.write('set(CMAKE_CXX_STANDARD 20)\n')
         f.write('set(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n')
         
+        # Get all configurations from first project
+        first_proj = None
+        for name, path, guid in projects:
+            if path.endswith(('.vcproj', '.vcxproj')):
+                first_proj = solution_dir / path.replace('\\', '/')
+                break
+                
+        if first_proj and first_proj.exists():
+            proj_tree = ET.parse(first_proj)
+            proj_root = proj_tree.getroot()
+            ns = {'ns': 'http://schemas.microsoft.com/developer/msbuild/2003'}
+            configurations = []
+            
+            # Check ProjectConfiguration elements
+            for proj_config in proj_root.findall('.//ns:ProjectConfiguration', ns):
+                config = proj_config.find('ns:Configuration', ns)
+                if config is not None and config.text and config.text not in configurations:
+                    configurations.append(config.text)
+                    
+            # Set linker flags for non-standard configurations
+            for config in configurations:
+                if config not in ['Debug', 'Release']:
+                    config_upper = config.upper()
+                    f.write(f'set(CMAKE_EXE_LINKER_FLAGS_{config_upper} "${{CMAKE_EXE_LINKER_FLAGS_RELEASE}}")\n')
+                    f.write(f'set(CMAKE_SHARED_LINKER_FLAGS_{config_upper} "${{CMAKE_SHARED_LINKER_FLAGS_RELEASE}}")\n')
+                    f.write(f'set(CMAKE_STATIC_LINKER_FLAGS_{config_upper} "${{CMAKE_STATIC_LINKER_FLAGS_RELEASE}}")\n')
+            f.write('\n')
+            
         # Add build configuration options using generator expressions
         f.write('# Build configuration options\n')
         f.write('add_compile_definitions(\n')
@@ -39,11 +68,13 @@ def convert_solution(sln_path):
         
         # Add subdirectories
         f.write('# Add project directories\n')
+        added_dirs = set()
         for name, path, guid in projects:
             if path.endswith(('.vcproj', '.vcxproj')):
                 proj_dir = Path(path).parent
-                if proj_dir.name:  # Skip if it's in the root directory
-                    f.write(f'add_subdirectory("{proj_dir}")\n')
+                if proj_dir.name and proj_dir.name not in added_dirs:  # Skip if it's in the root directory or already added
+                    f.write(f'add_subdirectory("{proj_dir.name}")\n')
+                    added_dirs.add(proj_dir.name)
         f.write('\n')
 
 def main():
