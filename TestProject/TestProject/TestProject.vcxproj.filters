@@ -26,5 +26,8 @@
     <ClInclude Include="forceincludes\forceinclude_release.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="forceincludes\forceinclude_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

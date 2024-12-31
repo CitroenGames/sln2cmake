@@ -1,4 +1,9 @@
 # Project settings
+set(CMAKE_CONFIGURATION_TYPES
+    "Debug"
+    "Release"
+    CACHE STRING "" FORCE)
+
 set(SOURCE_FILES_StaticLib1 pch.cpp StaticLib1.cpp)
 set(HEADER_FILES_StaticLib1 framework.h pch.h)
 add_library(StaticLib1 STATIC

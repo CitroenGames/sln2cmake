@@ -19,21 +19,22 @@ def _get_configuration_settings(compile_settings, settings, ns):
         if defs:
             settings['defines'] = defs
             
-    # Get configuration-specific preprocessor definitions
-    config_defines = {
-        'Debug': 'DebugPreprocessorDefinitions',
-        'Release': 'ReleasePreprocessorDefinitions',
-        'Profile': 'ProfilePreprocessorDefinitions'
-    }
+    # Get configuration from condition
+    config = None
+    if 'Condition' in compile_settings.attrib:
+        condition = compile_settings.attrib['Condition']
+        if "'$(Configuration)'=='" in condition:
+            config = condition.split("'")[3]
     
-    for config_type, define_tag in config_defines.items():
-        config_defs = compile_settings.find(f'ns:{define_tag}', ns)
+    # Get configuration-specific preprocessor definitions
+    if config:
+        config_defs = compile_settings.find(f'ns:{config}PreprocessorDefinitions', ns)
         if config_defs is not None and config_defs.text:
-            defs = [d.strip() for d in config_defs.text.split(';') if d.strip() and d != f'%({define_tag})']
+            defs = [d.strip() for d in config_defs.text.split(';') if d.strip() and d != f'%({config}PreprocessorDefinitions)']
             if defs:
                 if 'config_defines' not in settings:
                     settings['config_defines'] = {}
-                settings['config_defines'][config_type] = defs
+                settings['config_defines'][config] = defs
     
     # Get force includes
     force_inc = compile_settings.find('ns:ForcedIncludeFiles', ns)
@@ -43,6 +44,24 @@ def _get_configuration_settings(compile_settings, settings, ns):
             includes = [os.path.relpath(i, '.').replace('\\', '/') for i in includes]
             settings['force_includes'] = includes
 
+def get_configurations(root, ns):
+    """Extract all configurations from the project"""
+    configs = set()
+    # Check ProjectConfiguration elements
+    for proj_config in root.findall('.//ns:ProjectConfiguration', ns):
+        config = proj_config.find('ns:Configuration', ns)
+        if config is not None and config.text:
+            configs.add(config.text)
+            
+    # Also check ItemDefinitionGroup for any additional configs
+    for item_def in root.findall('.//ns:ItemDefinitionGroup', ns):
+        condition = item_def.get('Condition', '')
+        if "'$(Configuration)|$(Platform)'=='" in condition:
+            config = condition.split("'")[3].split('|')[0]
+            configs.add(config)
+            
+    return sorted(list(configs))
+
 def convert_vcxproj(vcxproj_path):
     tree = ET.parse(vcxproj_path)
     root = tree.getroot()
@@ -51,6 +70,14 @@ def convert_vcxproj(vcxproj_path):
     # Initialize CMake content
     cmake_content = []
     cmake_content.append('# Project settings')
+    
+    # Get configurations
+    configurations = get_configurations(root, ns)
+    if configurations:
+        cmake_content.append('set(CMAKE_CONFIGURATION_TYPES')
+        for config in configurations:
+            cmake_content.append(f'    "{config}"')
+        cmake_content.append('    CACHE STRING "" FORCE)\n')
     
     # Get project name
     project_name = Path(vcxproj_path).stem
@@ -128,7 +155,8 @@ def convert_vcxproj(vcxproj_path):
         cmake_content.append(f'target_compile_definitions({project_name} PRIVATE {" ".join([f"-D{d}" for d in all_defines])})')
     
     # Handle configuration-specific defines
-    for settings, config in [(debug_settings, 'Debug'), (release_settings, 'Release'), (profile_settings, 'Profile')]:
+    for settings in [debug_settings, release_settings, profile_settings]:
+        for config in settings.get('config_defines', {}):
         if settings.get('config_defines', {}).get(config):
             config_defines = settings['config_defines'][config]
             config_specific_defines.append(f'$<$<CONFIG:{config}>:{" ".join([f"-D{d}" for d in config_defines])}>')

@@ -10,7 +10,7 @@ int main()
 
 #if defined RELEASEPRO
 	// this is here to test out configuration dependent preprocessor definitions
-	std::cout << FORCEINCLUDE << std::endl;
+	std::cout << "RELEASEPRO" << std::endl;
 #endif
 
     framework obj;
