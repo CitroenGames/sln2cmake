@@ -1,8 +1,40 @@
 import os
 import re
 import xml.etree.ElementTree as ET
+import subprocess
 from pathlib import Path
 from vcxproj2cmake import convert_vcxproj
+
+def get_cmake_version():
+    """Get the installed CMake version and return appropriate minimum version"""
+    try:
+        result = subprocess.run(['cmake', '--version'], capture_output=True, text=True)
+        if result.returncode == 0:
+            # Extract version from output like "cmake version 4.0.0-rc2"
+            version_match = re.search(r'cmake version (\d+)\.(\d+)\.(\d+)', result.stdout)
+            if version_match:
+                major, minor, patch = map(int, version_match.groups())
+                
+                # For CMake 4.x, use 3.20 as minimum (good compatibility)
+                if major >= 4:
+                    return "3.20"
+                # For CMake 3.x, use the installed version but at least 3.10
+                elif major == 3:
+                    if minor >= 20:
+                        return "3.20"
+                    elif minor >= 16:
+                        return "3.16"
+                    elif minor >= 10:
+                        return f"3.{minor}"
+                    else:
+                        return "3.10"
+                else:
+                    return "3.10"
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+    
+    # Default fallback
+    return "3.16"
 
 def convert_solution(sln_path):
     sln_path = Path(sln_path)
@@ -24,9 +56,13 @@ def convert_solution(sln_path):
                 print(f"Converting project: {name}")
                 convert_vcxproj(proj_path)
     
+    # Get appropriate CMake version
+    cmake_min_version = get_cmake_version()
+    print(f"Using CMake minimum version: {cmake_min_version}")
+    
     # Create main CMakeLists.txt
     with open(solution_dir / 'CMakeLists.txt', 'w') as f:
-        f.write('cmake_minimum_required(VERSION 3.16)\n\n')
+        f.write(f'cmake_minimum_required(VERSION {cmake_min_version})\n\n')
         f.write(f'project({sln_path.stem})\n\n')
         f.write('set(CMAKE_CXX_STANDARD 20)\n')
         f.write('set(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n')

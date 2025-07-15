@@ -2,7 +2,7 @@ import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-def _get_configuration_settings(compile_settings, settings, ns):
+def _get_configuration_settings(compile_settings, settings, ns, config_name):
     """Extract configuration-specific settings from compile settings"""
     # Get include directories
     inc_dirs = compile_settings.find('ns:AdditionalIncludeDirectories', ns)
@@ -18,30 +18,13 @@ def _get_configuration_settings(compile_settings, settings, ns):
         defs = [d.strip() for d in defines.text.split(';') if d.strip() and d != '%(PreprocessorDefinitions)']
         if defs:
             settings['defines'] = defs
-            
-    # Get configuration from condition
-    config = None
-    if 'Condition' in compile_settings.attrib:
-        condition = compile_settings.attrib['Condition']
-        if "'$(Configuration)'=='" in condition:
-            config = condition.split("'")[3]
-    
-    # Get configuration-specific preprocessor definitions
-    if config:
-        config_defs = compile_settings.find(f'ns:{config}PreprocessorDefinitions', ns)
-        if config_defs is not None and config_defs.text:
-            defs = [d.strip() for d in config_defs.text.split(';') if d.strip() and d != f'%({config}PreprocessorDefinitions)']
-            if defs:
-                if 'config_defines' not in settings:
-                    settings['config_defines'] = {}
-                settings['config_defines'][config] = defs
     
     # Get force includes
     force_inc = compile_settings.find('ns:ForcedIncludeFiles', ns)
     if force_inc is not None and force_inc.text:
         includes = [i.strip() for i in force_inc.text.split(';') if i.strip() and i != '%(ForcedIncludeFiles)']
         if includes:
-            includes = [os.path.relpath(i, '.').replace('\\', '/') for i in includes]
+            includes = [i.replace('\\', '/') for i in includes]
             settings['force_includes'] = includes
 
 def get_configurations(root, ns):
@@ -62,6 +45,19 @@ def get_configurations(root, ns):
             
     return sorted(list(configs))
 
+def get_project_type(root, ns, config_name='Debug'):
+    """Determine if project is executable or library"""
+    # Look for ConfigurationType in PropertyGroup elements
+    for prop_group in root.findall('.//ns:PropertyGroup', ns):
+        condition = prop_group.get('Condition', '')
+        if f"'{config_name}|" in condition or 'Label="Configuration"' in prop_group.attrib:
+            config_type = prop_group.find('ns:ConfigurationType', ns)
+            if config_type is not None and config_type.text:
+                return config_type.text
+    
+    # Default to Application if not found
+    return 'Application'
+
 def convert_vcxproj(vcxproj_path):
     tree = ET.parse(vcxproj_path)
     root = tree.getroot()
@@ -69,20 +65,12 @@ def convert_vcxproj(vcxproj_path):
     
     # Initialize CMake content
     cmake_content = []
-    cmake_content.append('# Project settings')
-    
-    # Get configurations
-    configurations = get_configurations(root, ns)
-    if configurations:
-        cmake_content.append('set(CMAKE_CONFIGURATION_TYPES')
-        for config in configurations:
-            cmake_content.append(f'    "{config}"')
-        cmake_content.append('    CACHE STRING "" FORCE)')
-        
-        cmake_content.append('')
     
     # Get project name
     project_name = Path(vcxproj_path).stem
+    
+    # Get configurations
+    configurations = get_configurations(root, ns)
     
     # Get source files
     sources = []
@@ -97,19 +85,26 @@ def convert_vcxproj(vcxproj_path):
     
     # Write source files
     if sources:
-        cmake_content.append(f'set(SOURCE_FILES_{project_name} {" ".join(sources)})')
-    if headers:
-        cmake_content.append(f'set(HEADER_FILES_{project_name} {" ".join(headers)})')
+        cmake_content.append(f'set(SOURCE_FILES_{project_name}')
+        for source in sources:
+            cmake_content.append(f'    {source}')
+        cmake_content.append(')')
     
-    # Determine if it's a library
-    is_lib = False
-    config_type = root.find('.//ns:ConfigurationType', ns)
-    if config_type is not None and 'StaticLibrary' in config_type.text:
-        is_lib = True
+    if headers:
+        cmake_content.append(f'set(HEADER_FILES_{project_name}')
+        for header in headers:
+            cmake_content.append(f'    {header}')
+        cmake_content.append(')')
+    
+    # Determine project type
+    project_type = get_project_type(root, ns)
+    is_lib = 'StaticLibrary' in project_type or 'DynamicLibrary' in project_type
     
     # Add target
+    cmake_content.append('')
     if is_lib:
-        cmake_content.append(f'add_library({project_name} STATIC')
+        lib_type = 'STATIC' if 'StaticLibrary' in project_type else 'SHARED'
+        cmake_content.append(f'add_library({project_name} {lib_type}')
     else:
         cmake_content.append(f'add_executable({project_name}')
     
@@ -127,58 +122,73 @@ def convert_vcxproj(vcxproj_path):
         compile_settings = item_def.find('.//ns:ClCompile', ns)
         
         if compile_settings is not None and "'$(Configuration)|$(Platform)'=='" in condition:
-            config = condition.split("'")[3].split('|')[0]
+            config_platform = condition.split("'")[3]
+            config = config_platform.split('|')[0]
+            platform = config_platform.split('|')[1]
+            
             if config not in config_settings:
                 config_settings[config] = {}
-            _get_configuration_settings(compile_settings, config_settings[config], ns)
+            
+            _get_configuration_settings(compile_settings, config_settings[config], ns, config)
     
     # Write configuration-specific settings
     all_include_dirs = set()
-    config_defines = {}
+    all_defines = {}
+    all_force_includes = {}
     
-    # Collect all unique settings and organize defines by configuration
+    # Collect all settings
     for config, settings in config_settings.items():
         if settings.get('include_dirs'):
             all_include_dirs.update(settings['include_dirs'])
         
-        # Collect defines for this configuration
-        if settings:
-            defines = set()
-            if settings.get('defines'):
-                defines.update(settings['defines'])
-            if settings.get('config_defines', {}).get(config):
-                defines.update(settings['config_defines'][config])
-            if defines:
-                config_defines[config] = defines
-    
-    # Write include directories
-    if all_include_dirs:
-        cmake_content.append(f'target_include_directories({project_name} PRIVATE {" ".join(all_include_dirs)})')
-    
-    # Write configuration-specific defines using generator expressions
-    if config_defines:
-        defines_expr = []
-        for config, defines in config_defines.items():
-            if defines:
-                defines_expr.append(f'$<$<CONFIG:{config}>:{" ".join([f"-D{d}" for d in defines])}>')
-        if defines_expr:
-            cmake_content.append(f'target_compile_definitions({project_name} PRIVATE {" ".join(defines_expr)})')
-    
-    # Write force includes using generator expressions
-    force_includes = []
-    for config, settings in config_settings.items():
+        if settings.get('defines'):
+            all_defines[config] = settings['defines']
+            
         if settings.get('force_includes'):
-            force_includes.extend([f'$<$<CONFIG:{config}>:/FI{i}>' for i in settings['force_includes']])
+            all_force_includes[config] = settings['force_includes']
     
-    if force_includes:
-        cmake_content.append(f'target_compile_options({project_name} PRIVATE {" ".join(force_includes)})')
+    # Write include directories (common to all configs)
+    if all_include_dirs:
+        cmake_content.append('')
+        cmake_content.append(f'target_include_directories({project_name} PRIVATE')
+        for inc_dir in sorted(all_include_dirs):
+            cmake_content.append(f'    {inc_dir}')
+        cmake_content.append(')')
+    
+    # Write configuration-specific defines
+    if all_defines:
+        cmake_content.append('')
+        cmake_content.append(f'target_compile_definitions({project_name} PRIVATE')
+        for config in sorted(all_defines.keys()):
+            defines = all_defines[config]
+            define_str = ' '.join(defines)
+            cmake_content.append(f'    $<$<CONFIG:{config}>:{define_str}>')
+        cmake_content.append(')')
+    
+    # Write force includes
+    if all_force_includes:
+        cmake_content.append('')
+        cmake_content.append(f'target_compile_options({project_name} PRIVATE')
+        for config in sorted(all_force_includes.keys()):
+            includes = all_force_includes[config]
+            for include in includes:
+                cmake_content.append(f'    $<$<CONFIG:{config}>:/FI{include}>')
+        cmake_content.append(')')
     
     # Get project references
+    project_refs = []
     for ref in root.findall('.//ns:ProjectReference', ns):
         if 'Include' in ref.attrib:
             dep_path = Path(ref.attrib['Include'])
             dep_name = dep_path.stem
-            cmake_content.append(f'target_link_libraries({project_name} PRIVATE {dep_name})')
+            project_refs.append(dep_name)
+    
+    if project_refs:
+        cmake_content.append('')
+        cmake_content.append(f'target_link_libraries({project_name} PRIVATE')
+        for ref in project_refs:
+            cmake_content.append(f'    {ref}')
+        cmake_content.append(')')
     
     # Write CMakeLists.txt
     output_dir = Path(vcxproj_path).parent
