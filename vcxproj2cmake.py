@@ -2,8 +2,8 @@ import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-def _get_configuration_settings(compile_settings, settings, ns, config_name):
-    """Extract configuration-specific settings from compile settings"""
+def _get_configuration_settings(compile_settings, link_settings, settings, ns, config_name):
+    """Extract configuration-specific settings from compile and link settings"""
     # Get include directories
     inc_dirs = compile_settings.find('ns:AdditionalIncludeDirectories', ns)
     if inc_dirs is not None and inc_dirs.text:
@@ -26,6 +26,15 @@ def _get_configuration_settings(compile_settings, settings, ns, config_name):
         if includes:
             includes = [i.replace('\\', '/') for i in includes]
             settings['force_includes'] = includes
+    
+    # Get additional library dependencies from link settings
+    if link_settings is not None:
+        additional_deps = link_settings.find('ns:AdditionalDependencies', ns)
+        if additional_deps is not None and additional_deps.text:
+            libs = [lib.strip() for lib in additional_deps.text.split(';') 
+                   if lib.strip() and lib.strip() not in ['%(AdditionalDependencies)', '']]
+            if libs:
+                settings['libraries'] = libs
 
 def get_configurations(root, ns):
     """Extract all configurations from the project"""
@@ -58,6 +67,17 @@ def get_project_type(root, ns, config_name='Debug'):
     # Default to Application if not found
     return 'Application'
 
+def get_project_name(root, ns, fallback_name):
+    """Get the project name from PropertyGroup, with fallback"""
+    # Look for ProjectName in PropertyGroup
+    for prop_group in root.findall('.//ns:PropertyGroup', ns):
+        project_name = prop_group.find('ns:ProjectName', ns)
+        if project_name is not None and project_name.text:
+            return project_name.text
+    
+    # Fallback to the provided name
+    return fallback_name
+
 def convert_vcxproj(vcxproj_path):
     tree = ET.parse(vcxproj_path)
     root = tree.getroot()
@@ -66,8 +86,14 @@ def convert_vcxproj(vcxproj_path):
     # Initialize CMake content
     cmake_content = []
     
-    # Get project name
-    project_name = Path(vcxproj_path).stem
+    # Get project name (prefer ProjectName from PropertyGroup, fallback to filename)
+    fallback_name = Path(vcxproj_path).stem
+    project_name = get_project_name(root, ns, fallback_name)
+    
+    # Sanitize project name for CMake (replace invalid characters)
+    project_name = project_name.replace('-', '_').replace(' ', '_')
+    
+    print(f"  Using project name: {project_name}")
     
     # Get configurations
     configurations = get_configurations(root, ns)
@@ -120,6 +146,7 @@ def convert_vcxproj(vcxproj_path):
     for item_def in root.findall('.//ns:ItemDefinitionGroup', ns):
         condition = item_def.get('Condition', '')
         compile_settings = item_def.find('.//ns:ClCompile', ns)
+        link_settings = item_def.find('.//ns:Link', ns)
         
         if compile_settings is not None and "'$(Configuration)|$(Platform)'=='" in condition:
             config_platform = condition.split("'")[3]
@@ -129,12 +156,13 @@ def convert_vcxproj(vcxproj_path):
             if config not in config_settings:
                 config_settings[config] = {}
             
-            _get_configuration_settings(compile_settings, config_settings[config], ns, config)
+            _get_configuration_settings(compile_settings, link_settings, config_settings[config], ns, config)
     
     # Write configuration-specific settings
     all_include_dirs = set()
     all_defines = {}
     all_force_includes = {}
+    all_libraries = set()
     
     # Collect all settings
     for config, settings in config_settings.items():
@@ -146,6 +174,9 @@ def convert_vcxproj(vcxproj_path):
             
         if settings.get('force_includes'):
             all_force_includes[config] = settings['force_includes']
+            
+        if settings.get('libraries'):
+            all_libraries.update(settings['libraries'])
     
     # Write include directories (common to all configs)
     if all_include_dirs:
@@ -168,11 +199,25 @@ def convert_vcxproj(vcxproj_path):
     # Write force includes
     if all_force_includes:
         cmake_content.append('')
+        cmake_content.append('# Force includes')
         cmake_content.append(f'target_compile_options({project_name} PRIVATE')
         for config in sorted(all_force_includes.keys()):
             includes = all_force_includes[config]
             for include in includes:
                 cmake_content.append(f'    $<$<CONFIG:{config}>:/FI{include}>')
+        cmake_content.append(')')
+    
+    # Write libraries
+    if all_libraries:
+        cmake_content.append('')
+        cmake_content.append(f'target_link_libraries({project_name} PRIVATE')
+        for lib in sorted(all_libraries):
+            # Convert .lib to just the library name for CMake
+            if lib.endswith('.lib'):
+                lib_name = lib[:-4]  # Remove .lib extension
+            else:
+                lib_name = lib
+            cmake_content.append(f'    {lib_name}')
         cmake_content.append(')')
     
     # Get project references
@@ -185,6 +230,7 @@ def convert_vcxproj(vcxproj_path):
     
     if project_refs:
         cmake_content.append('')
+        cmake_content.append('# Project dependencies')
         cmake_content.append(f'target_link_libraries({project_name} PRIVATE')
         for ref in project_refs:
             cmake_content.append(f'    {ref}')
