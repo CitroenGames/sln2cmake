@@ -101,11 +101,8 @@ def convert_solution(sln_path):
     with open(solution_dir / 'CMakeLists.txt', 'w') as f:
         f.write(f'cmake_minimum_required(VERSION {cmake_min_version})\n\n')
         
-        # Use the solution name or the first project's actual name
-        if project_info:
-            main_project_name = project_info[0]['actual_name']
-        else:
-            main_project_name = sln_path.stem
+        # Use the solution file name as the project name
+        main_project_name = sln_path.stem
             
         f.write(f'project({main_project_name})\n\n')
         f.write('set(CMAKE_CXX_STANDARD 20)\n')
@@ -149,7 +146,9 @@ def convert_solution(sln_path):
         
         for proj in project_info:
             if proj['relative_dir'] and proj['relative_dir'].name not in added_dirs:
-                f.write(f'add_subdirectory("{proj["relative_dir"]}")\n')
+                # Convert Path to string with forward slashes for CMake
+                relative_dir_str = str(proj['relative_dir']).replace('\\', '/')
+                f.write(f'add_subdirectory("{relative_dir_str}")\n')
                 added_dirs.add(proj['relative_dir'].name)
             elif not proj['relative_dir']:  # Project is in root directory
                 f.write(f'# Project {proj["actual_name"]} is in root directory\n')

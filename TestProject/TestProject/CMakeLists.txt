@@ -22,12 +22,14 @@ target_compile_definitions(TestProject PRIVATE
     $<$<CONFIG:Test>:TESTTHING TESTCONFIG>
 )
 
+# Force includes
 target_compile_options(TestProject PRIVATE
     $<$<CONFIG:Debug>:/FIforceincludes/forceinclude_debug.h>
     $<$<CONFIG:Release>:/FIforceincludes/forceinclude_release.h>
     $<$<CONFIG:Test>:/FIforceincludes/forceinclude_test.h>
 )
 
+# Project dependencies
 target_link_libraries(TestProject PRIVATE
     StaticLib1
 )

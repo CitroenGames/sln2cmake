@@ -17,6 +17,8 @@ def _get_configuration_settings(compile_settings, link_settings, settings, ns, c
     if defines is not None and defines.text:
         defs = [d.strip() for d in defines.text.split(';') if d.strip() and d != '%(PreprocessorDefinitions)']
         if defs:
+            # Escape backslashes in definitions for CMake
+            defs = [d.replace('\\', '/') for d in defs]
             settings['defines'] = defs
     
     # Get force includes
@@ -34,6 +36,8 @@ def _get_configuration_settings(compile_settings, link_settings, settings, ns, c
             libs = [lib.strip() for lib in additional_deps.text.split(';') 
                    if lib.strip() and lib.strip() not in ['%(AdditionalDependencies)', '']]
             if libs:
+                # Escape backslashes in library paths for CMake
+                libs = [lib.replace('\\', '/') for lib in libs]
                 settings['libraries'] = libs
 
 def get_configurations(root, ns):
@@ -91,7 +95,7 @@ def convert_vcxproj(vcxproj_path):
     project_name = get_project_name(root, ns, fallback_name)
     
     # Sanitize project name for CMake (replace invalid characters)
-    project_name = project_name.replace('-', '_').replace(' ', '_')
+    project_name = project_name.replace('-', '_').replace(' ', '_').replace('(', '_').replace(')', '_')
     
     print(f"  Using project name: {project_name}")
     

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(TestProject)
+project(Testproject)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,3 +19,6 @@ add_compile_definitions(
 add_subdirectory("TestProject")
 add_subdirectory("StaticLib1")
 
+# Project name mappings:
+# Solution: "TestProject" -> CMake: "TestProject"
+# Solution: "StaticLib1" -> CMake: "StaticLib1"
