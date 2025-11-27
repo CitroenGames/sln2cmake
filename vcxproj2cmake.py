@@ -58,6 +58,27 @@ def get_configurations(root, ns):
             
     return sorted(list(configs))
 
+def is_file_excluded(element, ns, configurations):
+    """Check if a file is excluded from any build configuration"""
+    # Check for ExcludedFromBuild element in any configuration
+    for child in element:
+        if child.tag.endswith('ExcludedFromBuild'):
+            # If ExcludedFromBuild exists and is true, the file is excluded
+            if child.text and child.text.strip().lower() == 'true':
+                return True
+    
+    # Check for condition-based exclusions
+    for config in configurations:
+        excluded = element.find(f'ns:ExcludedFromBuild[@Condition="\'$(Configuration)|$(Platform)\'==\'{config}|Win32\'"]', ns)
+        if excluded is None:
+            excluded = element.find(f'ns:ExcludedFromBuild[@Condition="\'$(Configuration)|$(Platform)\'==\'{config}|x64\'"]', ns)
+        if excluded is not None and excluded.text and excluded.text.strip().lower() == 'true':
+            # File is excluded from at least one configuration
+            # For simplicity, we'll exclude it entirely if excluded from any config
+            return True
+    
+    return False
+
 def get_project_type(root, ns, config_name='Debug'):
     """Determine if project is executable or library"""
     # Look for ConfigurationType in PropertyGroup elements
@@ -102,16 +123,33 @@ def convert_vcxproj(vcxproj_path):
     # Get configurations
     configurations = get_configurations(root, ns)
     
-    # Get source files
+    # Get source files (excluding those marked as ExcludedFromBuild)
     sources = []
     headers = []
+    excluded_sources = []
+    excluded_headers = []
+    
     for item_group in root.findall('.//ns:ClCompile', ns):
         if 'Include' in item_group.attrib:
-            sources.append(item_group.attrib['Include'].replace('\\', '/'))
+            file_path = item_group.attrib['Include'].replace('\\', '/')
+            if is_file_excluded(item_group, ns, configurations):
+                excluded_sources.append(file_path)
+                print(f"  Excluding source from build: {file_path}")
+            else:
+                sources.append(file_path)
     
     for item_group in root.findall('.//ns:ClInclude', ns):
         if 'Include' in item_group.attrib:
-            headers.append(item_group.attrib['Include'].replace('\\', '/'))
+            file_path = item_group.attrib['Include'].replace('\\', '/')
+            if is_file_excluded(item_group, ns, configurations):
+                excluded_headers.append(file_path)
+                print(f"  Excluding header from build: {file_path}")
+            else:
+                headers.append(file_path)
+    
+    # Report exclusions
+    if excluded_sources or excluded_headers:
+        print(f"  Total excluded: {len(excluded_sources)} source(s), {len(excluded_headers)} header(s)")
     
     # Write source files
     if sources:
@@ -239,6 +277,15 @@ def convert_vcxproj(vcxproj_path):
         for ref in project_refs:
             cmake_content.append(f'    {ref}')
         cmake_content.append(')')
+    
+    # Add comment about excluded files if any
+    if excluded_sources or excluded_headers:
+        cmake_content.append('')
+        cmake_content.append('# The following files were excluded from the Visual Studio build:')
+        for src in excluded_sources:
+            cmake_content.append(f'# - {src}')
+        for hdr in excluded_headers:
+            cmake_content.append(f'# - {hdr}')
     
     # Write CMakeLists.txt
     output_dir = Path(vcxproj_path).parent
