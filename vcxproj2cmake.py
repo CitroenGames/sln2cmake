@@ -103,7 +103,7 @@ def get_project_name(root, ns, fallback_name):
     # Fallback to the provided name
     return fallback_name
 
-def convert_vcxproj(vcxproj_path):
+def convert_vcxproj(vcxproj_path, target_config=None):
     tree = ET.parse(vcxproj_path)
     root = tree.getroot()
     ns = {'ns': 'http://schemas.microsoft.com/developer/msbuild/2003'}
@@ -123,7 +123,16 @@ def convert_vcxproj(vcxproj_path):
     # Get configurations
     configurations = get_configurations(root, ns)
     
-    # Get source files (excluding those marked as ExcludedFromBuild)
+    # If target_config specified, validate it exists
+    if target_config:
+        if target_config not in configurations:
+            print(f"  WARNING: Specified configuration '{target_config}' not found in project.")
+            print(f"  Available configurations: {', '.join(configurations)}")
+            print(f"  Using '{target_config}' anyway...")
+        else:
+            print(f"  Converting settings for configuration: {target_config}")
+    
+    # Get source files (including those marked as ExcludedFromBuild)
     sources = []
     headers = []
     excluded_sources = []
@@ -134,6 +143,7 @@ def convert_vcxproj(vcxproj_path):
             file_path = item_group.attrib['Include'].replace('\\', '/')
             if is_file_excluded(item_group, ns, configurations):
                 excluded_sources.append(file_path)
+                sources.append(file_path)  # Still add to sources so it appears in project
                 print(f"  Excluding source from build: {file_path}")
             else:
                 sources.append(file_path)
@@ -143,6 +153,7 @@ def convert_vcxproj(vcxproj_path):
             file_path = item_group.attrib['Include'].replace('\\', '/')
             if is_file_excluded(item_group, ns, configurations):
                 excluded_headers.append(file_path)
+                headers.append(file_path)  # Still add to headers so it appears in project
                 print(f"  Excluding header from build: {file_path}")
             else:
                 headers.append(file_path)
@@ -165,7 +176,7 @@ def convert_vcxproj(vcxproj_path):
         cmake_content.append(')')
     
     # Determine project type
-    project_type = get_project_type(root, ns)
+    project_type = get_project_type(root, ns, target_config if target_config else 'Debug')
     is_lib = 'StaticLibrary' in project_type or 'DynamicLibrary' in project_type
     
     # Add target
@@ -195,6 +206,10 @@ def convert_vcxproj(vcxproj_path):
             config = config_platform.split('|')[0]
             platform = config_platform.split('|')[1]
             
+            # Skip if target_config specified and this isn't it
+            if target_config and config != target_config:
+                continue
+            
             if config not in config_settings:
                 config_settings[config] = {}
             
@@ -220,7 +235,7 @@ def convert_vcxproj(vcxproj_path):
         if settings.get('libraries'):
             all_libraries.update(settings['libraries'])
     
-    # Write include directories (common to all configs)
+    # Write include directories (common to all configs or specific config)
     if all_include_dirs:
         cmake_content.append('')
         cmake_content.append(f'target_include_directories({project_name} PRIVATE')
@@ -231,23 +246,41 @@ def convert_vcxproj(vcxproj_path):
     # Write configuration-specific defines
     if all_defines:
         cmake_content.append('')
-        cmake_content.append(f'target_compile_definitions({project_name} PRIVATE')
-        for config in sorted(all_defines.keys()):
-            defines = all_defines[config]
-            define_str = ' '.join(defines)
-            cmake_content.append(f'    $<$<CONFIG:{config}>:{define_str}>')
-        cmake_content.append(')')
+        if target_config:
+            # If specific config, write directly without generator expressions
+            cmake_content.append(f'target_compile_definitions({project_name} PRIVATE')
+            for defines in all_defines.values():
+                for define in defines:
+                    cmake_content.append(f'    {define}')
+            cmake_content.append(')')
+        else:
+            # Multi-config: use generator expressions
+            cmake_content.append(f'target_compile_definitions({project_name} PRIVATE')
+            for config in sorted(all_defines.keys()):
+                defines = all_defines[config]
+                define_str = ' '.join(defines)
+                cmake_content.append(f'    $<$<CONFIG:{config}>:{define_str}>')
+            cmake_content.append(')')
     
     # Write force includes
     if all_force_includes:
         cmake_content.append('')
         cmake_content.append('# Force includes')
-        cmake_content.append(f'target_compile_options({project_name} PRIVATE')
-        for config in sorted(all_force_includes.keys()):
-            includes = all_force_includes[config]
-            for include in includes:
-                cmake_content.append(f'    $<$<CONFIG:{config}>:/FI{include}>')
-        cmake_content.append(')')
+        if target_config:
+            # If specific config, write directly
+            cmake_content.append(f'target_compile_options({project_name} PRIVATE')
+            for includes in all_force_includes.values():
+                for include in includes:
+                    cmake_content.append(f'    /FI{include}')
+            cmake_content.append(')')
+        else:
+            # Multi-config: use generator expressions
+            cmake_content.append(f'target_compile_options({project_name} PRIVATE')
+            for config in sorted(all_force_includes.keys()):
+                includes = all_force_includes[config]
+                for include in includes:
+                    cmake_content.append(f'    $<$<CONFIG:{config}>:/FI{include}>')
+            cmake_content.append(')')
     
     # Write libraries
     if all_libraries:
@@ -278,14 +311,18 @@ def convert_vcxproj(vcxproj_path):
             cmake_content.append(f'    {ref}')
         cmake_content.append(')')
     
-    # Add comment about excluded files if any
+    # Mark excluded files with HEADER_FILE_ONLY property so they appear in IDE but don't compile
     if excluded_sources or excluded_headers:
         cmake_content.append('')
-        cmake_content.append('# The following files were excluded from the Visual Studio build:')
-        for src in excluded_sources:
-            cmake_content.append(f'# - {src}')
-        for hdr in excluded_headers:
-            cmake_content.append(f'# - {hdr}')
+        cmake_content.append('# Exclude files from build (but keep them visible in IDE)')
+        all_excluded = excluded_sources + excluded_headers
+        if all_excluded:
+            cmake_content.append('set_source_files_properties(')
+            for excluded_file in all_excluded:
+                cmake_content.append(f'    {excluded_file}')
+            cmake_content.append('    PROPERTIES')
+            cmake_content.append('    HEADER_FILE_ONLY TRUE')
+            cmake_content.append(')')
     
     # Write CMakeLists.txt
     output_dir = Path(vcxproj_path).parent
@@ -297,9 +334,10 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description='Convert Visual Studio Project to CMake')
     parser.add_argument('vcxproj_path', help='Path to the .vcxproj file')
+    parser.add_argument('--config', '-c', dest='config', help='Target configuration (e.g., Debug, Release)')
     
     args = parser.parse_args()
-    convert_vcxproj(args.vcxproj_path)
+    convert_vcxproj(args.vcxproj_path, args.config)
 
 if __name__ == '__main__':
     main()

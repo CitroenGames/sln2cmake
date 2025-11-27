@@ -54,7 +54,7 @@ def get_project_name_from_vcxproj(vcxproj_path):
     except:
         return Path(vcxproj_path).stem
 
-def convert_solution(sln_path):
+def convert_solution(sln_path, target_config=None):
     sln_path = Path(sln_path)
     solution_dir = sln_path.parent
     
@@ -83,7 +83,7 @@ def convert_solution(sln_path):
                 print(f"  Path: {proj_path}")
                 print(f"  Directory: {proj_dir}")
                 
-                convert_vcxproj(proj_path)
+                convert_vcxproj(proj_path, target_config)
                 
                 project_info.append({
                     'sln_name': sln_name,
@@ -108,8 +108,12 @@ def convert_solution(sln_path):
         f.write('set(CMAKE_CXX_STANDARD 20)\n')
         f.write('set(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n')
         
+        # If target_config is specified, add a comment
+        if target_config:
+            f.write(f'# Converted from configuration: {target_config}\n\n')
+        
         # Get all configurations from first project
-        if project_info:
+        if project_info and not target_config:
             first_proj = project_info[0]['path']
             
             if first_proj.exists():
@@ -132,13 +136,23 @@ def convert_solution(sln_path):
                         f.write(f'set(CMAKE_SHARED_LINKER_FLAGS_{config_upper} "${{CMAKE_SHARED_LINKER_FLAGS_RELEASE}}")\n')
                         f.write(f'set(CMAKE_STATIC_LINKER_FLAGS_{config_upper} "${{CMAKE_STATIC_LINKER_FLAGS_RELEASE}}")\n')
                 f.write('\n')
-                
-        # Add build configuration options using generator expressions
-        f.write('# Build configuration options\n')
-        f.write('add_compile_definitions(\n')
-        f.write('    $<$<CONFIG:Debug>:_DEBUG>\n')
-        f.write('    $<$<NOT:$<CONFIG:Debug>>:NDEBUG>\n')
-        f.write(')\n\n')
+        
+        # Add build configuration options using generator expressions (only if not target_config)
+        if not target_config:
+            f.write('# Build configuration options\n')
+            f.write('add_compile_definitions(\n')
+            f.write('    $<$<CONFIG:Debug>:_DEBUG>\n')
+            f.write('    $<$<NOT:$<CONFIG:Debug>>:NDEBUG>\n')
+            f.write(')\n\n')
+        else:
+            # For single config, add the appropriate define directly
+            f.write('# Build configuration options\n')
+            f.write('add_compile_definitions(\n')
+            if target_config == 'Debug':
+                f.write('    _DEBUG\n')
+            else:
+                f.write('    NDEBUG\n')
+            f.write(')\n\n')
         
         # Add subdirectories
         f.write('# Add project directories\n')
@@ -164,9 +178,14 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description='Convert Visual Studio Solution to CMake')
     parser.add_argument('sln_path', help='Path to the .sln file')
+    parser.add_argument('--config', '-c', dest='config', help='Target configuration to convert (e.g., Debug, Release)')
     
     args = parser.parse_args()
-    convert_solution(args.sln_path)
+    
+    if args.config:
+        print(f"Converting with target configuration: {args.config}\n")
+    
+    convert_solution(args.sln_path, args.config)
     print("\nCMake conversion complete!")
 
 if __name__ == '__main__':
